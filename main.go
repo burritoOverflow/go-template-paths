@@ -10,32 +10,36 @@ import (
 	"strings"
 )
 
-// simple hardcoded implementation
-func dynamicPathHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+// creates a new handler function for the provided path pattern
+func newDynamicPathHandler(pathPattern string) http.HandlerFunc {
+	replacedRoute := strings.Replace(pathPattern, "%s", "([a-zA-Z0-9]+)", -1)
+	log.Printf("Adding handler: %s\n", replacedRoute)
+	fullPattern := regexp.MustCompile("^" + replacedRoute + "$")
+
+	// determine the number of path parameters
+	numGroups := fullPattern.NumSubexp()
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		matches := fullPattern.FindStringSubmatch(r.URL.Path)
+		if matches == nil {
+			log.Printf("No matches for pattern '%s' in path '%s'", fullPattern, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+
+		log.Printf("%d Matches found: %v\n", len(matches), matches)
+
+		fmt.Fprintf(w, "Path parameters received:\n")
+		// send each to the client
+		for i := 1; i <= numGroups; i++ {
+			fmt.Fprintf(w, "Parameter %d: %s\n", i, matches[i])
+		}
 	}
-
-	// Define the pattern we're looking for
-	pathPattern := regexp.MustCompile(`^/foo/bar/([a-zA-Z0-9]+)/baz/([a-zA-Z0-9]+)/qux$`)
-	matches := pathPattern.FindStringSubmatch(r.URL.Path)
-	if matches == nil {
-		log.Printf("No matches for pattern %s in path '%s'", pathPattern, r.URL.Path)
-		http.NotFound(w, r)
-		return
-	}
-
-	// Extract the two path parameters
-	log.Printf("%d Matches found: %v\n", len(matches), matches)
-
-	param1 := matches[1]
-	param2 := matches[2]
-
-	// Well just use the parameters in the response
-	fmt.Fprintf(w, "Path parameters received:\n")
-	fmt.Fprintf(w, "First parameter: %s\n", param1)
-	fmt.Fprintf(w, "Second parameter: %s\n", param2)
 }
 
 // Convert a provided pattern path pattern from i.e "/foo/bar/%s/baz/%s/qux" to a proper alphanumeric regex
@@ -98,6 +102,13 @@ type customRouter struct {
 	routes []*route
 }
 
+// adds a list of a template routes to customRouter
+func (r *customRouter) addTemplateRoutes(routeTemplates []string) {
+	for _, routeTemplate := range routeTemplates {
+		r.HandleFunc(routeTemplate, newDynamicPathHandler(routeTemplate))
+	}
+}
+
 // register a new route with a template pattern and handler
 func (r *customRouter) HandleFunc(pattern string, handler http.HandlerFunc) {
 	// Convert the pattern from "/foo/bar/%s/baz/%s/qux" to a proper alphanumeric regex
@@ -138,32 +149,6 @@ func (r *customRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	http.NotFound(w, req)
 }
 
-// Function to get the stored path parameters from the context
-func getParam(r *http.Request, index int) string {
-	value := r.Context().Value(paramKey(index))
-	if value == nil {
-		return ""
-	}
-	return value.(string)
-}
-
-// Handler function for the custom router
-// TODO extend in the same manner as the mux implementation
-func dynamicPathHandlerFunc(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	param1 := getParam(r, 1)
-	param2 := getParam(r, 2)
-
-	// we'll just demo return the content
-	fmt.Fprintf(w, "Path parameters received:\n")
-	fmt.Fprintf(w, "First parameter: %s\n", param1)
-	fmt.Fprintf(w, "Second parameter: %s\n", param2)
-}
-
 func main() {
 	useCustomRouter := flag.Bool("customRouter", false, "Use the custom router implementation (mux default)")
 	port := flag.Int("port", 8080, "Port to run the server on")
@@ -171,20 +156,23 @@ func main() {
 	addr := fmt.Sprintf(":%d", *port)
 
 	if *useCustomRouter {
-		// Method 1: Using custom router implementation
-		router := &customRouter{}
-		// 'populate' the template string and associate it with the handler func
-		routeTemplateStr := "/foo/bar/%s/baz/%s/qux"
-		router.HandleFunc(routeTemplateStr, dynamicPathHandlerFunc)
+		// Method 1: Using custom cr implementation
+		cr := &customRouter{}
+		// add more routes
+		routeTemplates := []string{
+			"/api/v3/%s/%s",
+			"/api/v3/%s/%s/version", // allows for overlapping route
+			"/foo/bar/%s/baz/%s/qux",
+		}
+		cr.addTemplateRoutes(routeTemplates)
 		log.Printf("Starting server with custom router on %s...", addr)
-		log.Fatal(http.ListenAndServe(addr, router))
+		log.Fatal(http.ListenAndServe(addr, cr))
 	} else {
 		// Method 2: Using http.ServeMux with a generalized regex handler
 		mux := http.NewServeMux()
 		routeTemplates := []string{
 			"/foo/bar/%s/baz/%s/qux",
 			"/api/v3/%s/%s",
-			"/blah/foo/bar/baz/qux",
 		}
 		registerRouteTemplates(mux, routeTemplates)
 		log.Printf("Starting server with ServeMux on %s", addr)

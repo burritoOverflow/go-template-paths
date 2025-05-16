@@ -18,7 +18,7 @@ func TestDynamicPathHandler(t *testing.T) {
 			name:           "valid path",
 			path:           "/foo/bar/alpha123/baz/beta456/qux",
 			expectedStatus: http.StatusOK,
-			expectedBody:   "Path parameters received:\nFirst parameter: alpha123\nSecond parameter: beta456\n",
+			expectedBody:   "Path parameters received:\nParameter 1: alpha123\nParameter 2: beta456\n",
 		},
 		{
 			name:           "invalid path - too few segments",
@@ -72,10 +72,9 @@ func TestDynamicPathHandler(t *testing.T) {
 			}
 
 			rr := httptest.NewRecorder()
-			// For dynamicPathHandler, it's registered with a prefix,
-			// so we simulate a mux that would call it.
-			// A direct call is simpler here as the handler itself contains the full logic.
-			handler := http.HandlerFunc(dynamicPathHandler)
+			pathPattern := "/foo/bar/%s/baz/%s/qux"
+			handlerFunc := newDynamicPathHandler(pathPattern)
+			handler := http.HandlerFunc(handlerFunc)
 			handler.ServeHTTP(rr, req)
 
 			if status := rr.Code; status != tt.expectedStatus {
@@ -328,7 +327,8 @@ func TestNewPathRegexHandler(t *testing.T) {
 
 func TestCustomRouter(t *testing.T) {
 	router := &customRouter{}
-	router.HandleFunc("/foo/bar/%s/baz/%s/qux", dynamicPathHandlerFunc)
+	routeTemplateStr := "/foo/bar/%s/baz/%s/qux"
+	router.HandleFunc(routeTemplateStr, newDynamicPathHandler(routeTemplateStr))
 
 	tests := []struct {
 		name           string
@@ -340,13 +340,13 @@ func TestCustomRouter(t *testing.T) {
 			name:           "valid path",
 			path:           "/foo/bar/paramOne/baz/paramTwo/qux",
 			expectedStatus: http.StatusOK,
-			expectedBody:   "Path parameters received:\nFirst parameter: paramOne\nSecond parameter: paramTwo\n",
+			expectedBody:   "Path parameters received:\nParameter 1: paramOne\nParameter 2: paramTwo\n",
 		},
 		{
 			name:           "valid path with alphanumeric params",
 			path:           "/foo/bar/param123/baz/param456/qux",
 			expectedStatus: http.StatusOK,
-			expectedBody:   "Path parameters received:\nFirst parameter: param123\nSecond parameter: param456\n",
+			expectedBody:   "Path parameters received:\nParameter 1: param123\nParameter 2: param456\n",
 		},
 		{
 			name:           "invalid path - `baz` segment missing",
@@ -521,6 +521,129 @@ func TestGetPathPrefix(t *testing.T) {
 			result := getPathPrefix(tt.pattern)
 			if result != tt.expected {
 				t.Errorf("getPathPrefix(%q) = %q; want %q", tt.pattern, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCustomRouterOverlappingRoutes(t *testing.T) {
+	router := &customRouter{}
+	// Define routes as in main.go for the custom router
+	routeTemplates := []string{
+		"/api/v3/%s/%s",
+		"/api/v3/%s/%s/version", // overlapping route
+	}
+	router.addTemplateRoutes(routeTemplates)
+
+	tests := []struct {
+		name           string
+		method         string // Added to specify HTTP method
+		path           string
+		expectedStatus int
+		expectedBody   string
+	}{
+		// New tests for overlapping routes /api/v3/...
+		{
+			name:           "overlapping route - specific versioned path",
+			path:           "/api/v3/id1/id2/version",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "Path parameters received:\nParameter 1: id1\nParameter 2: id2\n",
+		},
+		{
+			name:           "overlapping route - general path",
+			path:           "/api/v3/idAlpha/idBeta",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "Path parameters received:\nParameter 1: idAlpha\nParameter 2: idBeta\n",
+		},
+		{
+			name:           "overlapping route - specific versioned path with alphanumeric params",
+			path:           "/api/v3/user123/data456/version",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "Path parameters received:\nParameter 1: user123\nParameter 2: data456\n",
+		},
+		{
+			name:           "overlapping route - non-versioned path with alphanumeric params",
+			path:           "/api/v3/user123/data456",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "Path parameters received:\nParameter 1: user123\nParameter 2: data456\n",
+		},
+		{
+			name:           "overlapping route - general path with alphanumeric params",
+			path:           "/api/v3/item789/detail000",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "Path parameters received:\nParameter 1: item789\nParameter 2: detail000\n",
+		},
+		{
+			name:           "overlapping route - path does not match general or specific versioned",
+			path:           "/api/v3/id1/id2/otherextension",
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "404 page not found\n",
+		},
+		{
+			name:           "overlapping route - path too short for general",
+			path:           "/api/v3/id1",
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "404 page not found\n",
+		},
+		{
+			name:           "overlapping route - path too long for general and not matching specific",
+			path:           "/api/v3/id1/id2/id3/version", // too many params for /api/v3/%s/%s/version
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "404 page not found\n",
+		},
+		{
+			name:           "overlapping route - path too long for general",
+			path:           "/api/v3/id1/id2/id3", // too many params for /api/v3/%s/%s
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "404 page not found\n",
+		},
+		{
+			name:           "additional path after /api/v3/id1/id2/version",
+			method:         http.MethodGet,
+			path:           "/api/v3/id1/id2/version/extra",
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "404 page not found\n",
+		},
+		{
+			name:           "invalid method for a valid custom route path (/api/v3/.../version)",
+			method:         http.MethodPost,
+			path:           "/api/v3/id1/id2/version",
+			expectedStatus: http.StatusMethodNotAllowed,
+			expectedBody:   "Method not allowed\n",
+		},
+		{
+			name:           "invalid method for a valid custom route path (/api/v3/...)",
+			method:         http.MethodPut,
+			path:           "/api/v3/idAlpha/idBeta",
+			expectedStatus: http.StatusMethodNotAllowed,
+			expectedBody:   "Method not allowed\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestMethod := tt.method
+			if requestMethod == "" {
+				requestMethod = http.MethodGet
+			}
+
+			req, err := http.NewRequest(requestMethod, tt.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+
+			if status := rr.Code; status != tt.expectedStatus {
+				t.Errorf("handler returned wrong status code: got %v want %v",
+					status, tt.expectedStatus)
+			}
+
+			// Trim newlines for consistent comparison, as http.Error and fmt.Fprintln might differ in trailing newlines.
+			if strings.TrimSpace(rr.Body.String()) != strings.TrimSpace(tt.expectedBody) {
+				t.Errorf("handler returned unexpected body: got %q want %q",
+					rr.Body.String(), tt.expectedBody)
 			}
 		})
 	}
