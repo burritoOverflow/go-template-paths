@@ -74,8 +74,8 @@ func newPathRegexHandler(routeTemplateStr string) http.HandlerFunc {
 			return
 		}
 
-		log.Printf("%d path parameters captured from path '%s' using pattern '%s': %v (full match: %s)\n",
-			numGroups, r.URL.Path, regexPatternStr, matches[1:], matches[0])
+		log.Printf("%d path parameters captured from path '%s' using pattern '%s': %v (full match: '%s')\n",
+			numGroups, r.URL.Path, regexPatternStr, strings.Join(matches[1:], ", "), matches[0])
 
 		if numGroups > 0 {
 			for i := 0; i < numGroups; i++ {
@@ -168,7 +168,6 @@ func main() {
 	useCustomRouter := flag.Bool("customRouter", false, "Use the custom router implementation (mux default)")
 	port := flag.Int("port", 8080, "Port to run the server on")
 	flag.Parse()
-
 	addr := fmt.Sprintf(":%d", *port)
 
 	if *useCustomRouter {
@@ -182,21 +181,23 @@ func main() {
 	} else {
 		// Method 2: Using http.ServeMux with a generalized regex handler
 		mux := http.NewServeMux()
-
-		// Define the path template(s)
-		routeTemplateStr := "/foo/bar/%s/baz/%s/qux"
-		apiRouteTemplStr := "/api/v3/%s/%s"
-		plainRouteTemplStr := "/blah/foo/bar/baz/qux"
-
-		// and create and register handlers
-		registerHandlerForPath(mux, routeTemplateStr)
-		registerHandlerForPath(mux, apiRouteTemplStr)
-		registerHandlerForPath(mux, plainRouteTemplStr)
-
+		routeTemplates := []string{
+			"/foo/bar/%s/baz/%s/qux",
+			"/api/v3/%s/%s",
+			"/blah/foo/bar/baz/qux",
+		}
+		registerRouteTemplates(mux, routeTemplates)
 		log.Printf("Starting server with ServeMux on %s", addr)
-		log.Printf("ServeMux handles prefix '%s'", routeTemplateStr)
 		log.Fatal(http.ListenAndServe(addr, mux))
 	}
+}
+
+// register route templates with the provided ServeMux
+func registerRouteTemplates(mux *http.ServeMux, routeTemplates []string) {
+	for _, routeTemplate := range routeTemplates {
+		registerHandlerForPath(mux, routeTemplate)
+	}
+	log.Printf("ServeMux handles %d routes %s", len(routeTemplates), strings.Join(routeTemplates, ", "))
 }
 
 // registerHandlerForPath registers a handler for the given path template with the provided ServeMux
